@@ -1,0 +1,464 @@
+---
+title: "Test-taking with Maimonides"
+subtitle: "Estimating the Effect of Class Size on 4th Grade Achievement  \n using an Instrumental Variable"
+author: "Dipika Gawande | S&DS 530 | 16 December 2021"
+output: pdf_document
+fontsize: 10pt
+bibliography: [ref.bib]
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(MASS)
+library(foreign)
+```
+
+
+# 1. Introduction
+
+## 1a. Background and Motivation
+
+A big policy question in education is the effect of class size on student outcomes. It is often argued that smaller class size is better, both for teachers and students [@mueller1988effects] as well as for policy-makers [@robinson1990] who find that class size is easier to change than other policy targets (such as lack of resources). However, empirical evidence for this belief is very weak. Angrist and Lavy, in their seminal 1999 paper, argue that research has not consistently shown that class size affects student achievement. The reason for the lack of evidence is a special case of omitted variable bias, called the "endogeneity problem." 
+
+Endogeneity of school quality variables is a long-standing issue in education research [@nascimento]. The problem is that school quality is determined by many factors that are unobservable. Interactions between parents, teachers, schools, and local government affect students' outcomes in ways that are difficult to measure. These "school interactions" manifest in unobserved "variables" like wealth and advantage, which are correlated **both** with class size (school quality in general) *and* student outcomes. For example, wealthy parents can pay for tutors and can also choose to send their kids to schools with smaller classes. The source of variation in class size (parental wealth, among other factors) is therefore not independent of the source of variation in the student's outcomes (also parental wealth, among other factors).
+
+This "endogeneity" problem is resolved by a technique called Instrumental Variable (IV) estimation [@steele2007]. The idea is to find a variable that is highly correlated with Class Size, but whose source of variation is independent of student outcomes. It is very difficult to find such IVs in practice. Angrist and Lavy (1999) find such a variable in an unusual rule that governs the division of school enrollment into class size in Israeli public schools today. The "Rule of 40", interpreted from the Talmud by 12th century Rabbinic scholar Maimonides, says the size of any class should be no more than 40 students [@hyamson1937annotated]. Maimonides' rule has been used by the Israeli Education Ministry to determine the division of enrollment cohorts into classes in Jewish public schools since 1969. Angrist and Lavy use this rule to to estimate the effects of class size on achievement of 4th and 5th graders.
+
+## 1b. Data source
+
+The data set used in this project is the administrative class-level replication data for "Using Maimonides Rule to Estimate the Effect of Class Size on Scholastic Achievement" [@angrist-maimonides], downloaded from Harvard DataVerse [^1]. Class average test score data in the paper's data set comes from administrative school and class data on average math and reading scores for 4th and 5th graders in 1991. The average test score data comes from a national testing program in Israeli public elementary schools in 1991 and 1992. The class and school variables (such as school enrollment size, class size, percent disadvantaged students, gender breakdown in each grade) come from annual reports from the Israeli Ministry of Education and Central Bureau of Statistics. The data coverage is the population of **all** Jewish public elementary schools in Israel covered by the Central Bureau of Statistics [1991, 1993] Censuses of Schools.
+
+[^1]: https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/XRSUJU.
+
+## 1c. Project Uniqueness
+
+The approach in my analysis of Angrist and Lavy's data is unique in the following aspects: I focus on the data for only 4th graders throughout this paper. Second, I test hypotheses regarding the relevance of economic disadvantage to 4th grade Class Average Test Score. Third, I conduct the Instrumental Variable (IV) estimation by writing my own R code for 2-stage linear regression in separate parts. Fourth, I test for interaction effects between Class Size and Enrollment.
+
+# 2. Visualizing the Data
+
+```{r, echo = FALSE}
+g4 <- read.dta("final4.dta")
+g4 <- g4 %>%
+  rename(class_avg_math = avgmath) %>%
+  rename(class_avg_verbal = avgverb) %>%
+  rename(class_size = classize) %>%
+  rename(pct_disadvantaged = tipuach) %>%
+  rename(enrollment = c_size)
+```
+
+Our main predictor/covariate of interest is `class_size`. The average class has 30 students. The `class_size` variable has a standard deviation of 6.4 students. 10% of classes have less than 22 students, and 10% of classes have more than 38 students. The response variables of interest are `class_avg_math` and `class_avg_verbal`. Before visualizing Test Scores, we drop 4 observations for which these variables have missing values. The mean of `class_avg_verbal` is 72.5%, with a standard deviation of 8.0 percentage points. The mean of `class_avg_math` is 68.9%, with a standard deviation of 8.8 percentage points. *See Appendix for figure code.*
+
+```{r, fig.height=6, fig.width=10, fig.cap= "*Left: Distribution of Class Average Verbal Score and Class Average Math Score (response variables) from 2055 non-missing 4th grade Jewish public school classes. Right: Distribution of Class Size (predictor variable) across the population of 2059 4th grade Jewish public school classes. Lowest and highest decile denoted by red dashed lines. Mean denoted by maroon solid line.*", echo = FALSE}
+
+g4_yvar <- g4 %>%
+  filter(is.na(class_avg_math) == 0, is.na(class_avg_verbal) == 0)
+#c(mean(g4_yvar$class_avg_verbal), sd(g4_yvar$class_avg_verbal))
+#c(mean(g4_yvar$class_avg_math), sd(g4_yvar$class_avg_math))
+
+par(mfrow = c(2, 2), mai = c(1, .7, 0.5, 0.1))
+
+truehist(g4_yvar$class_avg_verbal, h = 1, las = 1, xlim = c(30, 100),
+         border = "white", col = "dodgerblue",
+         main = "Y Var: Avg Verbal Score across 2055 classes",
+         ylab = "Relative Frequency", xlab = "Class Avg Verbal Score (%)")
+abline(v = mean(g4_yvar$class_avg_verbal), col = "darkred")
+abline(v = quantile(g4_yvar$class_avg_verbal, c(0.1, 0.9)), col = "red", lty = 5)
+
+truehist(g4$class_size, h = 1, las = 1, xlim = c(0, 60),
+         border = "white", col = "royalblue4",
+         main = "X Var: class size across 2059 classes",
+         ylab = "Relative Frequency", xlab = "Number of students")
+abline(v = mean(g4$class_size), col = "darkred")
+abline(v = quantile(g4$class_size, c(0.1, 0.9)), col = "red", lty = 5)
+
+truehist(g4$class_avg_math, h = 1, las = 1, xlim = c(30, 100),
+         border = "white", col = "dodgerblue",
+         main = "Y Var: Avg Math Score across 2055 classes",
+         ylab = "Relative Frequency", xlab = "Class Avg Math Score (%)")
+abline(v = mean(g4_yvar$class_avg_math), col = "darkred")
+abline(v = quantile(g4_yvar$class_avg_math, c(0.1, 0.9)), col = "red", lty = 5)
+```
+
+From the histograms and Q-Q plots, the two response variables (`class_avg_math` and `class_avg_verbal`) look to be approximately normally distributed. The distribution of `class_avg_verbal` is more left-skewed, deviating slightly from the 45 degree line of the Q-Q plot. \textcolor{blue}{However, we will proceed with ANOVA and linear regression to estimate the effect of Class Size on Test Scores.} *See Appendix for figure code.* 
+
+```{r, fig.width=6, fig.height=2.1, fig.cap ="*Normal Q-Q Plots of the response variables Class Average Verbal Score and Class Average Math Score. Class Average Math is nearly normally distributed. Class Average Verbal is slightly left-skewed.*", echo = FALSE}
+
+par(mfrow = c(1, 2),  mai = c(.8, .8, 0.2, 0.1), bty = "L")
+qqnorm(g4$class_avg_verbal, col = "dodgerblue", las = 1,
+       cex.axis = 0.5, cex.main = 0.5, cex.lab = 0.5,
+       main = "Normal Q-Q Plot for Class Average Verbal Score")
+qqnorm(g4$class_avg_math, col = "dodgerblue", las = 1,
+       cex.axis = 0.5, cex.main = 0.5, cex.lab = 0.5,
+       main = "Normal Q-Q Plot for Class Average Math Score")
+```
+
+# 3. Some pre-analysis
+
+## 3a. A First Look at the Effect of Class Size on Test Scores
+
+To see whether class size has an effect on 4th graders' test scores, we conduct ANOVA on a linear model. Model 1 includes only `class_size`, while Model 2 includes `class_size` and `pct_disadvantaged`.
+
+```{r}
+fit1_verbal <- lm(data = g4, class_avg_verbal ~ class_size)
+summary(fit1_verbal)$coefficients[ ,1:4]
+anova(fit1_verbal)
+
+fit2_verbal <- lm(data = g4, class_avg_verbal ~ class_size + pct_disadvantaged + enrollment)
+summary(fit2_verbal)$coefficients[ ,1:4]
+anova(fit2_verbal)
+```
+
+Two conclusions are apparent from the ANOVA and regression results:
+
+* **Good news:** Adding more variables to the model improves the model's fit and reduces the Mean Squared Error of the residuals. Including `pct_disadvantaged` in the model along with our covariate of interest `class_size` allows us to explain more of the variation in test scores.
+
+* **Bad news:** The coefficient on `class_size` disappears (reduces from 0.135 to -0.042) when we include `pct_disadvantaged`. \textcolor{red}{The effect of what we thought was the most important explanator of 4th-grade achievement has disappeared. Are the data telling us that Class Size has no effect on test scores?}
+
+## 3b. The Endogeneity Problem 
+
+The `class_size` variable is a victim of omitted variable bias. This is because the variation in `class_size` is actually caused by important unobserved or unmeasurable factors (child's socioeconomic background, wealth of the school district, parental involvement and influence over school choice), which we cannot account for in our model. These omitted variables are responsible for the variation in **both** class size and test scores! \textcolor{blue}{Not including them leads to bias in our estimate of the effect of class size on test scores.} 
+
+## 3c. Effect of Percent Disadvantaged Students on Test Scores
+
+### Parametric Hypothesis Test: Welch's t-Test for the Difference of Two Means
+
+From our discussion of the endogeneity problem, a natural question arises: do test scores (`class_avg_verbal` and `class_avg_math`) differ significantly between disadvantaged vs non-disadvantaged 4th grade classes? Since our data are approximately normally distributed, we will use a t-test for the difference of two means. We'll do this test twice, once for `class_avg_verbal` and once for `class_avg_math`.
+
+The `pct_disadvantaged` variable in the data set is a function of pupils’ fathers’ education and continent of birth, and
+family size" [@angrist-maimonides]. It reports the percentage of students in the class who come from what is defined to be a disadvantaged background. 
+
+```{r}
+ c(mean(g4$pct_disadvantaged), quantile(g4$pct_disadvantaged, c(.50, .75, .90, .95)))
+```
+
+We will define a "disadvantaged class" as one in which `pct_disadvantaged` is above the 75th percentile. **These are classes in which at least 19% of the students are from disadvantaged backgrounds**. We define a "non-disadvantaged class" as having less than 19% (the 75th percentile of) disadvantaged students. Creating the two groups this way yields sample sizes of: 523 "disadvantaged" classes and 1532 "non-disadvantaged" classes. 
+
+Our null hypothesis is: *There is no difference in the mean Class Avg Verbal (Math) Score between disadvantaged and non-disadvantaged classes.* Our alternate hypothesis is: *There is a difference between the mean Class Avg Verbal (Math) Score in disadvantaged classes and that of non-disadvantaged classes.*
+
+* $H_0: \mu_{disadvantaged} = \mu_{non-disadvantaged}$
+* $H_0: \mu_{disadvantaged} \neq \mu_{non-disadvantaged}$
+
+Where $\mu$ is the mean of the Class Average Verbal or Math Score. *See appendix for full output of t-Test.*
+
+```{r}
+
+## Create the "disadvantaged" dummy variable
+g4_disad <- g4 %>%
+  filter(is.na(class_avg_math) == 0, is.na(class_avg_verbal) == 0) %>%
+  mutate(disad = (pct_disadvantaged >= quantile(pct_disadvantaged, .75))) %>%
+  group_by(disad)
+
+## Make vectors of the two groups
+disad_verb <- g4_disad[g4_disad$disad == TRUE, ]$class_avg_verbal
+disad_math <- g4_disad[g4_disad$disad == TRUE, ]$class_avg_math
+nondisad_verb <- g4_disad[g4_disad$disad == FALSE, ]$class_avg_verbal
+nondisad_math <- g4_disad[g4_disad$disad == FALSE, ]$class_avg_math
+
+## Welch's T-Test for difference in mean Class Average Verbal Score
+ttest_verb <- t.test(disad_verb, nondisad_verb)
+c(format(ttest_verb$statistic, scientific = FALSE), signif(ttest_verb$p.value, 4))
+
+## Welch's T-Test for difference in mean Class Average Math Score
+ttest_math <- t.test(disad_math, nondisad_math)
+c(format(ttest_math$statistic, scientific = FALSE), signif(ttest_math$p.value, 4))
+```
+
+The p-value is near-zero for both tests so we reject $H_0$ in favor of $H_A$. Mean Class Average Verbal and Math Scores differ significantly between disadvantaged and non-disadvantaged classes. Therefore, `pct_disadvantaged` is an important control variable in the analysis.
+
+# 4. Data Preparation: the Instrumental Variable
+
+## 4a. Expected Class Size as per Maimonides' Rule
+
+To solve the endogeneity problem we will use the technique of creating an \textcolor{blue}{\bf{instrumental variable}} -- a variable highly correlated with our predictor `class_size`, but whose source of variation is independent from that of our response variable, Test Score. Maimonides' rule gives a function for creating just such a variable [@angrist-maimonides]. Whereas the variation in actual `class_size` is problematically endogenous, the variation in \textcolor{blue}{\it{Maimonides' Expected Class Size}} comes from an arbitrary formula unrelated to Test Score.  
+
+
+Mamonides' rule is a function for class size that depends only on grade `enrollment` and the number 40 [^2]: 
+$\\ \\ ExpectedClassSize_{sc} = enrollment_s / integer\left[ \left( {\frac{enrollment_s - 1}{40}} \right) + 1 \right] \\$ 
+
+For a school *s* with a 4th grade cohort of 90 students ($enrollment_s = 90$), the expected size of each 4th grade class *sc* is $90/ integer\left[ \left( {\frac{90 - 1}{40}} \right) + 1 \right]$ = **30 students**. \textcolor{blue}{\bf{We use this function to create our instrumental variable}} `class_size_maim`\textcolor{blue}{\bf{, the Maimonides' Expected Class Size.}}
+
+[^2]: Interpreting the Talmud, Maimonides writes that "Twenty-five children may be put in charge of one teacher. If the number in the class exceeds twenty-five but is not more than forty, he should have an assistant to help with the instruction. If there are more
+than forty, two teachers must be appointed." -- from Angrist and Lavy (1999)
+
+```{r}
+
+## Define the Maimonides Function
+maim_func <- function(x) {
+  x/(as.integer((x-1)/40) + 1)  }
+## Create class_size_maim (the expected Class Size as per Maimonides' rule).
+g4_maim <- g4 %>%
+  dplyr::select(schlcode, enrollment, class_size, pct_disadvantaged, class_avg_math, class_avg_verbal) %>%
+  mutate(class_size_maim = (sapply(enrollment, maim_func))) %>%
+  arrange(enrollment)
+```
+
+The figure shows that `class_size` in the population of Israeli Jewish public school 4th grade classes seems to follow the Maimonides' rule of 40 (it is the law, though executed imperfectly). We note the zig-zag pattern of `class_size`, which drops every time the school's 4th grade enrollment reaches a multiple of 40. Actual `class_size` (in grey) follows the Maimonides' Expected Class Size (the instrumental variable `class_size_maim`, in midblue) as grade enrollment increases. This figure mirrors a key visualization from [@angrist-maimonides], but we have created it independently. *See appendix for figure code.*
+
+```{r, fig.width = 18, fig.height = 6.5, fig.cap="*The zig-zag pattern of Class Size as Grade Enrollment increases in the population of Jewish public school 4th grade cohorts in Israel. Both axes show number of students. Enrollment multiples of 40 marked by red dashed lines. Actual Class Size in light grey. The instrumental variable, Expected Class Size as per Maimonides' Rule, in midblue.*", echo=FALSE}
+
+## Zig-zag pattern of Class Size as Enrollment Increases
+g4 <- g4 %>%
+  arrange(enrollment, class_size)
+
+ggplot(data = g4_maim, aes(x=enrollment, y=class_size)) + geom_line(color = "darkgrey") + 
+  scale_x_continuous(name = "Enrollment", breaks = seq(0, 200, by = 40)) +
+  geom_vline(xintercept = c(40, 80, 120, 160, 200), color = "red", linetype="dashed", size=.7) +
+  geom_line(data = g4_maim, aes(x = enrollment, y = class_size_maim), 
+            color = "dodgerblue", linetype="solid", size=1.5) +
+  theme(axis.text.x = element_text(size = 20), axis.text.y = element_text(size = 20), 
+        axis.title = element_text(size = 20), plot.title  = element_text(size = 25), 
+        panel.background = element_rect(fill = "white"), 
+        panel.grid.major = element_line(color = "gray90"),
+        panel.grid.minor = element_line(colour = "gray90")) +
+  labs(title = "Expected and Actual Class Size by Enrollment", 
+       x = "Enrollment", y = "Class Size")
+```
+
+The instrumental variable `class_size_maim` is highly correlated with actual `class_size` (r = 0.73). This is the first property of a good instrument: `class_size_maim` will be able to predict actual `class_size` with high precision. We will further elaborate on this in the next section.
+
+```{r}
+cor(g4_maim$class_size, g4_maim$class_size_maim)
+```
+
+## 4b. Constructing the Instrumental Variable
+
+As cited by Nascimento, the instrumental variable (IV) is “a variable correlated with the intervention but otherwise unrelated to the test score [@webbink-causal]. The net effect of class size can be estimated with Two Stage Least Squares (2SLS): first, regressing class size on the IV and other exogenous variables, and then regressing the test score on..." *Predicted Class Size due to the IV*, "together with other controls." Accordingly, we will carry out the Instrumental Variable technique in two stages:
+
+1. Make a **Predicted** Class Size variable by regressing actual `class_size` on the instrumental variable `class_size_maim`, the Maimonides' Expected Class Size. Include other controls.
+
+2. Use this `pred_class_size` as the explanatory variable for Test Scores. Unlike the original `class_size`, the variation in `pred_class_size` is independent of school interactions, parental involvement, socioeconomic leverage, or any other unobservable factors also responsible for variation in Test Scores. 
+
+Once we predict `class_size` using the Maimonides' Rule, the resulting `pred_class_size` variable has two properties: 1) it is highly correlated with the original `class_size` and 2) its **only** source of variation is the arbitrary formula of Maimonides' rule. \textcolor{blue}{The Instrumental Variable method gives us a covariate whose source of variation is independent of Test Scores, but whose variation can explain variation in Test Scores!}
+
+```{r}
+## STEP 1: CREATE INSTRUMENTAL VARIABLE
+## Regress actual class size on class_size_maim (and other desired covariates)
+iv_fit <- lm(data = g4_maim, class_size ~ class_size_maim + pct_disadvantaged + enrollment)
+## Then predict class size using this model
+g4_maim <- g4_maim %>%
+  mutate(pred_class_size = predict.lm(iv_fit))
+cor(g4_maim$class_size, g4_maim$pred_class_size)
+```
+
+
+# 5. Analysis and Results
+
+## 5a. Instrumental Variable Estimates of Class Size Effects
+
+Now, we can replace the problematic `class_size` with our new variable `pred_class_size` as the predictor of Test Score. If the coefficient on `pred_class_size` is still zero, we will have strong evidence to believe this coefficient. \textcolor{blue}{Whatever variation in Test Score that is explained by the variation in {\bf Predicted} Class Size will now be an \underline{unbiased} estimate of the effect of Class Size on Test Score.}
+
+```{r}
+## STEP 2: FIT MODEL USING IV-PREDICTED CLASS SIZE
+fit2_verbal_iv <- lm(data = g4_maim, class_avg_verbal ~ pred_class_size + pct_disadvantaged + enrollment)
+summary(fit2_verbal_iv)$coefficients[,1:4]
+  
+fit2_math_iv <- lm(data = g4_maim, class_avg_math ~ pred_class_size + pct_disadvantaged + enrollment)
+summary(fit2_math_iv)$coefficients[,1:4]
+```
+
+The coefficient on `pred_class_size` is statistically significant for Class Average Verbal Score but not for Math Score. The instrumental variable estimate of the effect of Class Size on Class Average Verbal Score is -0.129 percentage points *per unit increase in Class Size*. We interpret this as a -0.129 percentage reduction in Class Average Verbal Score *for every additional student*. If Class Size increases by 20 students, then the Class Average Verbal Score is estimated to decrease by 2.58 percentage points. This is a sizeable decrease worthy of policy attention. 
+
+Interestingly, Class Size matters for Verbal Scores but not for Math Scores. It is possible that Verbal aptitude benefits from a discussion-based environment, in which there is more student-student or student-teacher interaction. This may not hold true for a math learning environment. Indeed, even at Yale many higher level math classes are taught as large lectures, whereas English or writing classes often utilize smaller seminar environments.
+
+## 5b. Interaction Effects 
+
+Now let's see if the effect of Class Size changes when interacted with another variable, `enrollment`. *See appendix for full regression output*.
+
+```{r}
+regverb <- lm(data = g4_maim, class_avg_verbal ~ pred_class_size*enrollment + pct_disadvantaged)
+summary(regverb)$coefficients[c(2,3,5),1:4]
+
+regmath <- lm(data = g4_maim, class_avg_math ~ pred_class_size*enrollment + pct_disadvantaged)
+summary(regmath)$coefficients[c(2,3,5),1:4]
+```
+
+
+```{r, fig.height=2.5, fig.width=6, fig.cap="Interaction Effect of Predicted Class Size and Enrollment on Class Avg Verbal Score. The interaction effect exists for Verbal Score but not for Math Score.",  echo = FALSE, fig.align='center'}
+## interaction plot
+# interaction.plot(x.factor = g4_maim$pred_class_size,
+#                  trace.factor = g4_maim$enrollment,
+#                  response = g4_maim$class_avg_verbal, type = "l")
+
+library(interactions)
+library(wesanderson)
+
+interact_plot(regverb, pred = pred_class_size, modx = enrollment, centered = "none", plot.points = TRUE, colors = c("#46ACC8", "#7294D4", "#B40F20"), size = 0.1) + scale_x_continuous(name = "Predicted Class Size (IV)", breaks = seq(10, 40, by = 5)) +
+  scale_y_continuous(name = "Class Avg Verbal Score (%)", breaks = seq(10, 100, by = 10)) +
+  theme(axis.text.x = element_text(size = 7.5), axis.text.y = element_text(size = 7.5), 
+        axis.title = element_text(size = 7.5), plot.title  = element_text(size = 8),
+        legend.text = element_text(size = 6.5), legend.title = element_text(size = 7.5)) +
+  labs(title = "Interaction Effect of Predicted Class Size * Enrollment on Avg Verbal Score", modx = "Enrollment")
+
+
+```
+
+Both the regression output and interaction plot show a statistically significant interaction effect between `enrollment` and `pred_class_size` on Class Average Verbal Score. However, the magnitude of the interaction coefficient is small. A one-student increase in `enrollment` slightly mitigates the negative effect of increasing Class Size on Class Average Verbal Score. A similar analysis for Math Score shows no evidence of an interaction. A possible explanation for this may the fact that in Israel, larger schools (with higher `enrollment`) are located in cities and urban centers, where student achievement may be higher on average. Smaller schools may be located in less developed towns, where average test scores are lower.
+
+# Reflection
+
+This project cemented my understanding of hypothesis testing and practical applications of one-way ANOVA. Implementing the dplyr and ggplot techniques we learned in class to arrange the data frame for my analysis and make the specific visualizations I wanted was an intensive and good practice with coding in R. I felt satisfied being able to implement a difficult technique, namely Instrumental Variable (IV) estimation using 2-stage linear regression in R. I spent 30-35 hours on this project.
+
+# References {-}
+
+<div id="refs"></div>
+
+# Appendix
+
+## 2. Loading the data
+
+```{r, eval = FALSE}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(MASS)
+library(foreign)
+
+g4 <- read.dta("final4.dta")
+g4 <- g4 %>%
+  rename(class_avg_math = avgmath) %>%
+  rename(class_avg_verbal = avgverb) %>%
+  rename(class_size = classize) %>%
+  rename(pct_disadvantaged = tipuach) %>%
+  rename(enrollment = c_size)
+```
+
+## 3a. Pre-analysis on Percent Disadvantaged Students
+
+* Distribution of Percent Disadvantaged Students 
+
+```{r, fig.height=3.5, fig.width=5}
+truehist(g4_maim$pct_disadvantaged, col = "dodgerblue", border = "white", las = 1, h = 2,
+         main = "Appendix: Distribution of % Disadvantaged Students across 2059 4th Grade Classes", 
+         xlab = "% Disadvantaged Students", ylab = "Relative Frequency",
+         cex.main = 0.65, cex.axis = 0.65, cex.lab = 0.65)
+```
+
+```{r}
+## Welch's T-Test for Class Average Verbal Score
+t.test(disad_verb, nondisad_verb)
+
+## Welch's T-Test for Class Average Math Score
+t.test(disad_math, nondisad_math)
+```
+
+## 4a. ANOVA output for regression of class average Math score on class size
+
+```{r}
+fit1_math <- lm(data = g4_maim, class_avg_math ~ class_size)
+anova(fit1_math)
+
+fit2_math <- lm(data = g4, class_avg_math ~ class_size + pct_disadvantaged + enrollment)
+anova(fit2_math)
+
+```
+
+* Plotting the interaction regressions
+
+```{r, fig.height=4.5, fig.width=6}
+par(mfrow = c(2,2), mai = c(1, .6, 0.5, 0.1))
+
+summary(regverb)
+plot(regverb, cex.main = 0.5, cex.axis = 0.5)
+
+summary(regmath)
+plot(regmath, cex.main = 0.5, cex.axis = 0.5)
+```
+
+* Code for Figure 1
+
+```{r, fig.height=4.5, fig.width=3.5}
+
+# c(mean(g4$class_size), sd(g4$class_size))
+
+par(mfrow = c(2, 1), mai = c(1, .8, 0.5, 0.1))
+truehist(g4$class_size, h = 1, las = 1, xlim = c(0, 60),
+         border = "white", col = "dodgerblue",
+         main = "Distribution of class size across 2059 4th grade classes",
+         ylab = "Relative Frequency", xlab = "Number of students",
+         cex.lab = 0.5, cex.main = 0.5, cex.axis = 0.5)
+abline(v = mean(g4$class_size), col = "darkred")
+abline(v = quantile(g4$class_size, c(0.1, 0.9)), col = "red", lty = 5)
+```
+
+* Code for Figure 2
+
+```{r, fig.height=4.5, fig.width=6.5}
+
+g4_yvar <- g4 %>%
+  filter(is.na(class_avg_math) == 0, is.na(class_avg_verbal) == 0)
+#c(mean(g4_yvar$class_avg_verbal), sd(g4_yvar$class_avg_verbal))
+#c(mean(g4_yvar$class_avg_math), sd(g4_yvar$class_avg_math))
+
+par(mfrow = c(2, 2), mai = c(1, .7, 0.5, 0.1))
+truehist(g4_yvar$class_avg_verbal, h = 1, las = 1, xlim = c(30, 100),
+         border = "white", col = "dodgerblue",
+         main = "Distribution of Avg Verbal Score across 2055 classes",
+         ylab = "Relative Frequency", xlab = "Class Avg Verbal Score (%)",
+         cex.main = 0.5, cex.axis = 0.5, cex.lab = 0.5)
+abline(v = mean(g4_yvar$class_avg_verbal), col = "darkred")
+abline(v = quantile(g4_yvar$class_avg_verbal, c(0.1, 0.9)), col = "red", lty = 5)
+
+truehist(g4$class_avg_math, h = 1, las = 1, xlim = c(30, 100),
+         border = "white", col = "dodgerblue",
+         main = "Distribution of Avg Math Score across 2055 classes",
+         ylab = "Relative Frequency", xlab = "Class Avg Math Score (%)",
+         cex.main = 0.5, cex.axis = 0.5, cex.lab = 0.5)
+abline(v = mean(g4_yvar$class_avg_math), col = "darkred")
+abline(v = quantile(g4_yvar$class_avg_math, c(0.1, 0.9)), col = "red", lty = 5)
+```
+
+* Code for Figure 3
+```{r, fig.width=4.5, fig.height=2}
+
+par(mfrow = c(1:2),  mai = c(1, .8, 0.2, 0.1))
+qqnorm(g4$class_avg_math, col = "dodgerblue", las = 1,
+       cex.axis = 0.4, cex.main = 0.4, cex.lab = 0.4,
+       main = "Normal Q-Q Plot for Class Mean Math Score")
+qqnorm(g4$class_avg_verbal, col = "dodgerblue", las = 1,
+       cex.axis = 0.4, cex.main = 0.4, cex.lab = 0.4,
+       main = "Normal Q-Q Plot for Class Mean Verbal Score")
+```
+
+* Code for Figure 4
+
+```{r, fig.width = 4.5, fig.height = 1.5}
+## Zig-zag pattern of Class Size as Enrollment Increases
+g4 <- g4 %>%
+  arrange(enrollment, class_size)
+
+ggplot(data = g4_maim, aes(x=enrollment, y=class_size)) + geom_line(color = "grey") + 
+  scale_x_continuous(name = "Enrollment", breaks = seq(0, 200, by = 40)) +
+  geom_vline(xintercept = c(40, 80, 120, 160, 200), color = "red", linetype="dashed", size=.1) +
+  geom_line(data = g4_maim, aes(x = enrollment, y = class_size_maim), 
+            color = "royalblue4", linetype="solid", size=.3) +
+  theme(axis.text.x = element_text(size = 6), axis.text.y = element_text(size = 6), 
+        axis.title = element_text(size = 6), plot.title  = element_text(size = 8)) +
+  labs(title = "Expected and Actual Class Size by Enrollment", 
+       x = "Enrollment", y = "Class Size")
+```
+
+
+* Code for Figure 5
+
+```{r, fig.height=1.5, fig.width=3, fig.align='center'}
+library(interactions)
+library(wesanderson)
+
+interact_plot(regverb, pred = pred_class_size, modx = enrollment, centered = "none", plot.points = TRUE, colors = c("#46ACC8", "#7294D4", "#B40F20")) + scale_x_continuous(name = "Predicted Class Size (IV)", breaks = seq(10, 40, by = 5)) +
+  scale_y_continuous(name = "Class Avg Verbal Score (%)", breaks = seq(10, 100, by = 10)) +
+  theme(axis.text.x = element_text(size = 8), axis.text.y = element_text(size = 8), 
+        axis.title = element_text(size = 8), plot.title  = element_text(size = 9)) +
+  labs(title = "Interaction Effect of Predicted Class Size * Enrollment on Avg Verbal Score")
+
+interact_plot(regmath, pred = pred_class_size, modx = enrollment, centered = "none", plot.points = TRUE, colors = c("#46ACC8", "#7294D4", "#B40F20")) + scale_x_continuous(name = "Predicted Class Size (IV)", breaks = seq(10, 40, by = 5)) +
+  scale_y_continuous(name = "Class Avg Math Score (%)", breaks = seq(10, 100, by = 10)) +
+  theme(axis.text.x = element_text(size = 8), axis.text.y = element_text(size = 8), 
+        axis.title = element_text(size = 8), plot.title  = element_text(size = 9)) +
+  labs(title = "Interaction Effect of Predicted Class Size * Enrollment on Avg Math Score")
+```
+
+
+
