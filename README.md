@@ -9,6 +9,5 @@
 -   The data files (downloaded from Joshua Angrist's DataVerse page) are the files in this repository named "final4.csv" (data for 4th graders) and "final5.csv" (data for 5th graders). 
 
 THIS REPOSITORY:
-  - sdf
-  - sdf
-  - sdf
+  - 
+  - 
